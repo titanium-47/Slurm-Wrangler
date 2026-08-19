@@ -21,9 +21,6 @@ That single command:
    faults (ECC) on a fresh node but fails fast on real bugs, and a shared bad-node
    registry that keeps jobs off persistently broken nodes.
 
-The resilience layer is extracted from UWLab's cluster infra (`submit_job_slurm_hyak.sh`
-et al.), generalized so any project can use it.
-
 ## Install
 
 ```bash
@@ -162,7 +159,7 @@ doubles in size; review with `sw sync --review`). A "yes" covers the whole direc
 no per-subdirectory nagging. Non-interactive runs fail fast with exact instructions
 instead of hanging.
 
-### Failure handling (from UWLab, generalized)
+### Failure handling
 
 | Event | What happens |
 |---|---|
@@ -191,8 +188,8 @@ then requeues continue seamlessly.
 - `.dockerignore` negation handling is a pragmatic subset; prefer simple patterns.
 - Hyak ckpt: use `account: ckpt-<lab>`, `qos: ckpt-gpu` (the wizard sets this). The GPU
   constraint is auto-forced to `a40|a100` on Hyak — override with `--constraint`.
-- Channels (long-lived GPU-holder workers with instant push, as in UWLab) are not ported
-  yet; direct `sbatch` submission is the supported path.
+- Long-lived GPU-holder workers ("channels") with zero-queue-wait experiment push are
+  planned; direct `sbatch` submission is the current path.
 
 ## Development
 

@@ -41,7 +41,7 @@ launcher: plain                  # plain | torchrun
 # workdir: /workspace/my-project # container mount point for the code (default shown)
 # prestage: scripts/prestage.sh  # project script run on the compute node BEFORE the
                                  # container starts (env: SW_JOB_TMPDIR); replaces
-                                 # bespoke cache staging like UWLab's Isaac dance
+                                 # bespoke staging that cache: entries can't express
 
 defaults:
   cluster: hyak                  # hyak | tillicum
