@@ -245,3 +245,29 @@ class TestConfig:
         proj = make_project(tmp_path, files={"sub/deep/x.py": "1"})
         found = ProjectConfig.load(tmp_path / "sub" / "deep")
         assert found.root == tmp_path
+
+
+class TestRuntimeScripts:
+    RT = Path(__file__).parent.parent / "src" / "slurm_wrangler" / "runtime"
+
+    def test_read_loops_survive_missing_trailing_newline(self):
+        # base64-encoded records are newline-joined WITHOUT a trailing newline;
+        # a bare `while read` drops the final record, so every decode must
+        # append one (`base64 -d; echo`). Regression: WANDB_API_KEY silently
+        # not forwarded (found in real smoke job 38645994 on Hyak).
+        body = (self.RT / "run_container.sh").read_text()
+        for var in ("SW_BINDS_B64", "SW_ENV_FWD_B64"):
+            assert f'< <(echo "${var}" | base64 -d; echo)' in body, var
+
+    def test_bash_syntax(self):
+        for script in ("run_container.sh", "submit_slurm.sh"):
+            subprocess.run(["bash", "-n", str(self.RT / script)], check=True)
+
+    def test_optional_directives_are_set_e_safe(self):
+        # `[ -n .. ] && echo ..` as a statement kills a `set -e` script when the
+        # test is false; every optional #SBATCH directive needs `|| true`.
+        body = (self.RT / "submit_slurm.sh").read_text()
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[ -n") and "&& echo" in stripped:
+                assert stripped.endswith("|| true"), line

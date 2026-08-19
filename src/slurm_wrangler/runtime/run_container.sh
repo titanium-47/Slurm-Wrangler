@@ -88,7 +88,7 @@ if [ -n "${SW_BINDS_B64:-}" ]; then
             continue
         fi
         BIND_FLAGS+=(-B "$host:$container:$mode")
-    done < <(echo "$SW_BINDS_B64" | base64 -d)
+    done < <(echo "$SW_BINDS_B64" | base64 -d; echo)
 fi
 
 # Code over the workdir
@@ -109,7 +109,7 @@ if [ -n "${SW_ENV_FWD_B64:-}" ]; then
     while IFS= read -r kv; do
         [ -z "$kv" ] && continue
         ENV_FLAGS+=(--env "$kv")
-    done < <(echo "$SW_ENV_FWD_B64" | base64 -d)
+    done < <(echo "$SW_ENV_FWD_B64" | base64 -d; echo)
 fi
 ENV_FLAGS+=(--env "SW_JOB_ID=${SLURM_JOB_ID:-0}")
 ENV_FLAGS+=(--env "SLURM_JOB_ID=${SLURM_JOB_ID:-0}")
