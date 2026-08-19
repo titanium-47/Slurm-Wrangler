@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slurm-wrangler"
+version = "0.1.0"
+description = "Plug-and-play launcher for running any local project on UW Hyak/Tillicum SLURM clusters (rsync code, containerized env, auto-requeue)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Yanda Bao" }]
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+sw = "slurm_wrangler.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+slurm_wrangler = ["runtime/*.sh", "templates/*"]

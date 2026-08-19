@@ -1,0 +1,54 @@
+# Full-surface example sw.yaml — copy what you need. `sw init` generates a minimal one.
+name: my-project
+
+image:
+  kind: conda                    # conda | dockerfile | prebuilt
+  environment: environment.yml
+  base: mambaorg/micromamba:2.0.5
+  apt: []                        # extra apt packages baked into the image
+  pip: []                        # extra pip installs after env creation
+  # kind: dockerfile
+  # dockerfile: docker/Dockerfile
+  # build_args: {SOME_ARG: value}
+  # kind: prebuilt
+  # sif_remote: /gscratch/weirdlab/me/some-image.sif
+
+sync:
+  respect_gitignore: true
+  respect_dockerignore: true
+  exclude: []                    # gitignore-style patterns, e.g. ["/checkpoints", "*.mp4"]
+  follow_symlinks: false
+  big_dir_gb: 1.0                # >this per top-level dir triggers the one-time gate
+  big_dir_files: 50000
+
+data:
+  - name: my_dataset
+    src: ~/data/my_dataset       # local source for `sw data push my_dataset`
+    mount: /data/my_dataset      # read-only mount point in the container
+
+persist: [logs, outputs]         # project-relative dirs on persistent cluster storage
+
+cache:
+  - preset: huggingface          # presets: huggingface | torch | pip | isaac-sim
+  # - container: /root/.cache/mycache
+  #   writeback: true
+  #   writeback_mode: ignore-existing   # race-free for content-addressed caches
+
+env: {}                          # static env vars set in every job, e.g. {MUJOCO_GL: egl}
+forward_env: []                  # extra local env globs to forward (WANDB_* is global default)
+
+launcher: plain                  # plain | torchrun
+# workdir: /workspace/my-project # container mount point for the code (default shown)
+# prestage: scripts/prestage.sh  # project script run on the compute node BEFORE the
+                                 # container starts (env: SW_JOB_TMPDIR); replaces
+                                 # bespoke cache staging like UWLab's Isaac dance
+
+defaults:
+  cluster: hyak                  # hyak | tillicum
+  gpus: 1
+  nodes: 1
+  time: "24:00:00"
+  # partition: ckpt
+  # account: ckpt-weirdlab
+  # qos: ckpt-gpu
+  # constraint: "a40|a100"
