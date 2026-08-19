@@ -98,6 +98,14 @@ BIND_FLAGS+=(-B "$CODE_LOCAL:$SW_WORKDIR:rw")
 mkdir -p "$SW_PROJECT_DIR/tmp"
 BIND_FLAGS+=(-B "$SW_PROJECT_DIR/tmp:/tmp:rw")
 
+# Job-private HOME on node-local scratch (via apptainer's --home flag; --env
+# HOME= is not permitted). Without this, --containall leaves HOME pointing at
+# the user's real cluster home path, which resolves through the cluster-FS
+# bind — and tools (micromamba proc dir, matplotlib, ...) then write there
+# over GPFS, slowly or with 'File exists' races across concurrent jobs.
+mkdir -p "$JOB_TMPDIR/home/.cache"
+HOME_FLAG=(--home "$JOB_TMPDIR/home:/sw_home")
+
 # DNS + CA certs (needed for wandb etc. under --containall on Rocky hosts)
 [ -e /etc/resolv.conf ] && BIND_FLAGS+=(-B /etc/resolv.conf:/etc/resolv.conf:ro)
 [ -d /etc/pki ] && BIND_FLAGS+=(-B /etc/pki:/etc/pki:ro)
@@ -111,6 +119,7 @@ if [ -n "${SW_ENV_FWD_B64:-}" ]; then
         ENV_FLAGS+=(--env "$kv")
     done < <(echo "$SW_ENV_FWD_B64" | base64 -d; echo)
 fi
+ENV_FLAGS+=(--env "XDG_CACHE_HOME=/sw_home/.cache")
 ENV_FLAGS+=(--env "SW_JOB_ID=${SLURM_JOB_ID:-0}")
 ENV_FLAGS+=(--env "SLURM_JOB_ID=${SLURM_JOB_ID:-0}")
 if [ -d /etc/pki/tls/certs ]; then
@@ -163,6 +172,7 @@ NV_FLAG=()
 
 echo "[sw-run] launching: ${RUN_INSIDE[*]}"
 "$SING_BIN" exec \
+    "${HOME_FLAG[@]}" \
     "${BIND_FLAGS[@]}" \
     "${ENV_FLAGS[@]}" \
     --env "PYTHONNOUSERSITE=1" \

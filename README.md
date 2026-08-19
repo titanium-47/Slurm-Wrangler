@@ -184,6 +184,9 @@ then requeues continue seamlessly.
 
 - **Writes outside `persist:` dirs vanish** when the job ends — code runs from a node-local
   scratch copy. Put checkpoints/logs in a persist dir.
+- **`HOME` inside the container is `/sw_home`** — a job-private, node-local dir discarded
+  after the job (prevents dotfile-cache writes/races on GPFS). Caches worth keeping
+  across jobs belong in `cache:` entries, which override the relevant paths.
 - Multi-node jobs need `launcher: torchrun` (with `plain`, every node runs the same command).
 - `.dockerignore` negation handling is a pragmatic subset; prefer simple patterns.
 - Hyak ckpt: use `account: ckpt-<lab>`, `qos: ckpt-gpu` (the wizard sets this). The GPU
