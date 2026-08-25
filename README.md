@@ -33,15 +33,56 @@ Local requirements: `rsync`, `ssh`, and — only for building images — `docker
 
 ## One-time setup
 
-```bash
-sw setup      # interactive: NetID, lab account, storage roots, ssh-config blocks
-ssh klone-login true   # answer Duo ONCE in a real terminal; ControlPersist keeps it warm
-sw doctor     # end-to-end preflight: ssh, storage, sbatch, apptainer, env file
+### 1. SSH: keys + a persistent connection (do this first)
+
+`sw` reaches the clusters through the ssh aliases `klone-login` (Hyak) and `tillicum`.
+Hyak enforces Duo 2FA, and a single `sw run` opens several ssh/rsync connections — so
+the aliases **must** use `ControlMaster`/`ControlPersist`. With them, one authenticated
+connection is reused: you answer Duo **once**, and every later `sw` command (including
+ones run from scripts or agents) rides the open socket with no prompt.
+
+Add this to `~/.ssh/config` (replace `<netid>`):
+
+```sshconfig
+Host klone-login klone klone.hyak.uw.edu
+    HostName klone.hyak.uw.edu
+    User <netid>
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist yes
+
+Host tillicum tillicum.hyak.uw.edu
+    HostName tillicum.hyak.uw.edu
+    User <netid>
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist yes
 ```
 
-`sw setup` writes `~/.config/slurm_wrangler/config.yaml` and can append the ssh aliases
-(`klone-login`, `tillicum`) with `ControlMaster`/`ControlPersist` so **Duo is answered at
-most once per session**, no matter how many jobs you launch.
+`ControlPersist yes` keeps the master connection open indefinitely after your first
+login (use e.g. `ControlPersist 4h` if you'd rather it expire). Then register a key and
+open the master connection once, **in a real terminal** (Duo needs a TTY):
+
+```bash
+ssh-keygen -t ed25519            # if you don't already have a key
+ssh-copy-id klone-login          # register it on Hyak (Duo prompt)
+ssh-copy-id tillicum             # and Tillicum
+ssh klone-login true             # authenticate once -> master socket opens
+ssh -O check klone-login         # should print "Master running"
+```
+
+If a socket ever dies (reboot, network change), just run `ssh klone-login true` again.
+`sw setup` will offer to append these blocks for you if they're missing.
+
+### 2. Configure and verify
+
+```bash
+sw setup      # interactive: NetID, lab account, storage roots (offers the ssh blocks above)
+sw doctor     # end-to-end preflight: ssh sockets, storage, sbatch, apptainer, env file
+```
+
+`sw setup` writes `~/.config/slurm_wrangler/config.yaml`. `sw doctor` warns if a
+cluster has no live master socket, since the next command would trigger a Duo prompt.
 
 ## Per-project onboarding
 
