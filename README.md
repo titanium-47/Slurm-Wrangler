@@ -127,6 +127,49 @@ defaults:
   time: "24:00:00"
 ```
 
+### Portable `sw.yaml` (placeholders and vars)
+
+To commit one `sw.yaml` for a whole team, keep usernames and per-user paths out of it.
+`image.sif_remote` and `env:` values are expanded at submit time:
+
+| Placeholder | Expands to |
+|---|---|
+| `{storage_root}` | your cluster `storage_root` from `~/.config/slurm_wrangler/config.yaml` |
+| `{project_dir}` | `{storage_root}/projects/<name>` (where sw keeps persist/logs/caches) |
+| `{project}` / `{cluster}` / `{user}` (`{netid}`) | project name, cluster name, global `user` |
+| `{<var>}` | a var from `vars:` (below) |
+| `{container:<name>}` | the same path **as seen inside the container**. Only the cluster mount (`mount_dir`) is bound, so on Hyak `/gscratch/...` becomes `/mmfs1/gscratch/...`. Use this in `env:` values that the job reads. Override with `container_storage_root:` on a cluster if your layout differs. |
+
+`vars:` in `sw.yaml` are project **defaults**. Each user can override any of them in their own
+global config, either top-level (`vars:`) or per cluster (`clusters.<name>.vars:`, which wins).
+That lets one user point at an image or env that lives in **another user's** directory:
+
+```yaml
+# sw.yaml (committed)
+vars:
+  image_dir: "{storage_root}/apptainer"          # default: your own storage
+  venv: "{container:project_dir}/env/.venv"
+image:
+  kind: prebuilt
+  sif_remote: "{image_dir}/isaac-lab.sif"
+env:
+  VIRTUAL_ENV: "{venv}"
+  PATH: "{venv}/bin:/usr/local/bin:/usr/bin:/bin"
+```
+
+```yaml
+# ~/.config/slurm_wrangler/config.yaml (per user, not committed)
+clusters:
+  hyak:
+    storage_root: /gscratch/weirdlab/alice
+    vars:
+      image_dir: /gscratch/weirdlab/bob/apptainer   # reuse Bob's copy of the image
+```
+
+Vars may reference built-ins and other vars. Braces that don't name a known placeholder,
+such as JSON, are left as-is. Paths from other users' directories just need to be readable by
+you.
+
 ## Everyday commands
 
 ```bash

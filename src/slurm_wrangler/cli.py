@@ -194,6 +194,7 @@ def _dispatch(args) -> int:
             sif = project.state_dir / "exports" / f"env-{ehash}.sif"
             info(f"local SIF: {sif if sif.exists() else 'not converted'}")
             cluster = gcfg.cluster(args.cluster or (project.defaults or {}).get("cluster"))
+            project = project.resolved(cluster, gcfg)
             present = remote_has_image(project, cluster, ehash) if project.image.kind != "prebuilt" else True
             info(f"on {cluster.name}: {'present' if present else 'MISSING'} "
                  f"({remote_sif_path(project, cluster, ehash)})")
@@ -202,7 +203,7 @@ def _dispatch(args) -> int:
             build_sif(project, ehash, project.state_dir / "exports")
         elif args.env_cmd == "push":
             cluster = gcfg.cluster(args.cluster or (project.defaults or {}).get("cluster"))
-            push_image(project, cluster, ehash)
+            push_image(project.resolved(cluster, gcfg), cluster, ehash)
         return 0
 
     if args.cmd == "sync":

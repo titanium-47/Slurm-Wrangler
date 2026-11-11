@@ -271,3 +271,79 @@ class TestRuntimeScripts:
             stripped = line.strip()
             if stripped.startswith("[ -n") and "&& echo" in stripped:
                 assert stripped.endswith("|| true"), line
+
+
+# ---------------------------------------------------------------------------
+class TestPlaceholders:
+    def _hyak(self, **kw):
+        from slurm_wrangler.config import ClusterConfig
+        return ClusterConfig(name="hyak", login="klone-login", storage_root="/gscratch/weirdlab/u",
+                             mount_dir="/mmfs1", **kw)
+
+    def _proj(self, tmp_path, **raw):
+        return make_project(tmp_path, raw={"name": "p", **raw})
+
+    def test_builtins_in_sif_and_env(self, tmp_path):
+        proj = self._proj(tmp_path, image={"kind": "prebuilt",
+                                           "sif_remote": "{storage_root}/apptainer/x.sif"},
+                          env={"VENV": "{container:project_dir}/env/.venv",
+                               "WHO": "{user}@{cluster}/{project}", "JSON": '{"a": 1}'})
+        r = proj.resolved(self._hyak(), GlobalConfig(user="u"))
+        assert r.image.sif_remote == "/gscratch/weirdlab/u/apptainer/x.sif"
+        assert r.env["VENV"] == "/mmfs1/gscratch/weirdlab/u/projects/p/env/.venv"
+        assert r.env["WHO"] == "u@hyak/p"
+        assert r.env["JSON"] == '{"a": 1}'           # unrelated braces untouched
+        assert proj.env["VENV"].startswith("{")       # original left unexpanded
+
+    def test_vars_precedence_and_other_users_dir(self, tmp_path):
+        # sw.yaml ships a default; one user points it at another user's directory.
+        proj = self._proj(tmp_path, vars={"image_dir": "{storage_root}/apptainer"},
+                          image={"kind": "prebuilt", "sif_remote": "{image_dir}/x.sif"},
+                          env={"IMG": "{container:image_dir}"})
+        default = proj.resolved(self._hyak(), GlobalConfig(user="u"))
+        assert default.image.sif_remote == "/gscratch/weirdlab/u/apptainer/x.sif"
+        g = GlobalConfig(user="u", vars={"image_dir": "/gscratch/weirdlab/other/apptainer"})
+        shared = proj.resolved(self._hyak(), g)
+        assert shared.image.sif_remote == "/gscratch/weirdlab/other/apptainer/x.sif"
+        assert shared.env["IMG"] == "/mmfs1/gscratch/weirdlab/other/apptainer"
+        # per-cluster vars beat top-level vars
+        c = self._hyak(vars={"image_dir": "/mmfs1/shared/img"})
+        assert proj.resolved(c, g).image.sif_remote == "/mmfs1/shared/img/x.sif"
+        assert proj.resolved(c, g).env["IMG"] == "/mmfs1/shared/img"  # already under mount_dir
+
+    def test_global_config_vars_parsed(self, tmp_path, monkeypatch):
+        import slurm_wrangler.config as cfg
+        p = tmp_path / "config.yaml"
+        p.write_text(yaml.safe_dump({
+            "user": "u", "vars": {"image_dir": "/top"},
+            "clusters": {"hyak": {"storage_root": "/gscratch/weirdlab/u",
+                                  "vars": {"venv_dir": "/mmfs1/v"}}}}))
+        monkeypatch.setattr(cfg, "GLOBAL_CONFIG_PATH", p)
+        g = GlobalConfig.load()
+        assert g.vars == {"image_dir": "/top"}
+        assert g.cluster("hyak").vars == {"venv_dir": "/mmfs1/v"}
+
+    def test_container_path_rules(self):
+        from slurm_wrangler.config import ClusterConfig
+        assert self._hyak().container_path("/gscratch/a") == "/mmfs1/gscratch/a"
+        assert self._hyak().container_path("/mmfs1/gscratch/a") == "/mmfs1/gscratch/a"
+        assert self._hyak().container_path("relative/x") == "relative/x"
+        till = ClusterConfig(name="tillicum", login="t", storage_root="/gpfs/projects/u",
+                             mount_dir="/gpfs")
+        assert till.container_path("/gpfs/projects/u/x") == "/gpfs/projects/u/x"
+        c = self._hyak(container_storage_root="/inside/u")
+        assert c.container_path("/gscratch/weirdlab/u/projects/p") == "/inside/u/projects/p"
+        assert c.container_path("/gscratch/weirdlab/other") == "/mmfs1/gscratch/weirdlab/other"
+
+    def test_errors(self, tmp_path):
+        proj = self._proj(tmp_path, env={"A": "{user}"})
+        with pytest.raises(ConfigError, match="empty"):
+            proj.resolved(self._hyak(), GlobalConfig(user=""))
+        proj = self._proj(tmp_path, env={"A": "{container:nope}"})
+        with pytest.raises(ConfigError, match="unknown placeholder"):
+            proj.resolved(self._hyak(), GlobalConfig(user="u"))
+        proj = self._proj(tmp_path, vars={"a": "{b}", "b": "{a}"}, env={"A": "{a}"})
+        with pytest.raises(ConfigError, match="cycle"):
+            proj.resolved(self._hyak(), GlobalConfig(user="u"))
+        with pytest.raises(ConfigError, match="shadows"):
+            self._proj(tmp_path, vars={"storage_root": "/x"})
