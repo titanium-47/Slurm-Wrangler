@@ -254,7 +254,7 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
     targets = pdefaults.get("targets") or []
     if params.race and not targets:
         raise ConfigError("--race needs a non-empty `defaults.targets` list in sw.yaml")
-    envs = race_envs(sw_env, targets, job_name) if params.race else [sw_env]
+    envs = race_envs(sw_env, targets, f"{job_name}-{stamp}") if params.race else [sw_env]
 
     def _cmd(env: Dict[str, str]) -> str:
         assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
@@ -294,7 +294,7 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
             "slurm_logs_dir": cluster.slurm_logs_dir(project.name),
         }
         if params.race:
-            rec["group"] = job_name
+            rec["group"] = f"{job_name}-{stamp}"
         _record_job(project, rec)
         if job_id:
             log = f"{cluster.slurm_logs_dir(project.name)}/{job_name}-{job_id}.out"
