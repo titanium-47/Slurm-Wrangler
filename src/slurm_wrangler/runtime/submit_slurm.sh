@@ -212,5 +212,10 @@ fi
 exit $EXIT_CODE
 JOB_BODY
 
+if [ -n "${SW_RACE_GROUP:-}" ] && [ -s "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner" ]; then
+    echo "[sw-submit] Race group '$SW_RACE_GROUP' already claimed by job $(cat "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner"); not submitting partition=${SW_PARTITION:-<default>}."
+    exit 0
+fi
+
 SUBMIT_OUT=$(sbatch --export=ALL "$JOB_SH")
 echo "$SUBMIT_OUT"

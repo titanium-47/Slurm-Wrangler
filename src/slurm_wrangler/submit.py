@@ -281,6 +281,8 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
         print(out)
         m = re.search(r"Submitted batch job (\d+)", out)
         job_id = m.group(1) if m else None
+        if not job_id and params.race:
+            continue  # group already claimed at submit time; nothing queued
         first_id = first_id or job_id
         rec = {
             "job_id": job_id, "cluster": cluster.name, "name": job_name, "cmd": cmd_str,
