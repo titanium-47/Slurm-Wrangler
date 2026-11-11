@@ -11,7 +11,7 @@ image:
   # dockerfile: docker/Dockerfile
   # build_args: {SOME_ARG: value}
   # kind: prebuilt
-  # sif_remote: /gscratch/weirdlab/me/some-image.sif
+  # sif_remote: "{image_dir}/some-image.sif"   # placeholders: see vars: below
 
 sync:
   respect_gitignore: true
@@ -34,7 +34,17 @@ cache:
   #   writeback: true
   #   writeback_mode: ignore-existing   # race-free for content-addressed caches
 
+# Placeholders keep this file user-agnostic, so it can be committed. image.sif_remote and env
+# values may use {storage_root} {project_dir} {project} {cluster} {user} {netid}, any var
+# below, and {container:NAME} (the same path as seen inside the container, e.g. Hyak
+# /gscratch/... -> /mmfs1/gscratch/...). The vars here are defaults: each user can override
+# them in ~/.config/slurm_wrangler/config.yaml under `vars:` or `clusters.<name>.vars:`,
+# e.g. to use an image that lives in another user's directory.
+vars:
+  image_dir: "{storage_root}/apptainer"
+
 env: {}                          # static env vars set in every job, e.g. {MUJOCO_GL: egl}
+                                 # e.g. {VIRTUAL_ENV: "{container:project_dir}/env/.venv"}
 forward_env: []                  # extra local env globs to forward (WANDB_* is global default)
 
 launcher: plain                  # plain | torchrun

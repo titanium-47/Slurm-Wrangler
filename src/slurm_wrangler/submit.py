@@ -148,6 +148,7 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
         raise ConfigError("no command given — usage: sw run [flags] -- <command...>")
     pdefaults = project.defaults or {}
     cluster = gcfg.cluster(params.cluster or pdefaults.get("cluster"))
+    project = project.resolved(cluster, gcfg)  # expand sw.yaml {placeholders}
     slurm = cluster.slurm or {}
 
     gpus = int(_resolve(params.gpus, pdefaults, "gpus", {}, 1))

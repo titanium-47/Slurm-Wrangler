@@ -12,7 +12,9 @@ Per-project mutable state (sync decisions, job history, hash cache) lives in
 from __future__ import annotations
 
 import copy
+import dataclasses
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,9 +119,30 @@ class ClusterConfig:
     force_constraint: str = ""
     requeue_signal_secs: int = 60
     slurm: Dict[str, Any] = field(default_factory=dict)
+    # storage_root as seen INSIDE the container. Only mount_dir is bound, so a storage_root
+    # reached through a host symlink (Hyak: /gscratch -> /mmfs1/gscratch) needs mapping.
+    # Empty = derive via container_path().
+    container_storage_root: str = ""
+    vars: Dict[str, str] = field(default_factory=dict)  # per-user sw.yaml placeholder overrides
 
     def project_dir(self, project: str) -> str:
         return f"{self.storage_root}/projects/{project}"
+
+    def container_path(self, host_path: str) -> str:
+        """Map a host path to the path visible inside the container.
+
+        Explicit ``container_storage_root`` wins. Otherwise a path already under
+        ``mount_dir`` is unchanged, and anything else is assumed reachable as
+        ``mount_dir + path`` (the Hyak /gscratch -> /mmfs1/gscratch convention).
+        """
+        if self.container_storage_root and (
+            host_path == self.storage_root or host_path.startswith(self.storage_root + "/")
+        ):
+            return self.container_storage_root.rstrip("/") + host_path[len(self.storage_root):]
+        mount = self.mount_dir.rstrip("/")
+        if not host_path.startswith("/") or not mount or host_path == mount or host_path.startswith(mount + "/"):
+            return host_path
+        return mount + host_path
 
     def runtime_dir(self, rt_hash: str) -> str:
         return f"{self.storage_root}/runtime/{rt_hash}"
@@ -134,6 +157,7 @@ class GlobalConfig:
     forward_env: List[str] = field(default_factory=lambda: list(DEFAULT_FORWARD_ENV))
     default_cluster: str = "hyak"
     clusters: Dict[str, ClusterConfig] = field(default_factory=dict)
+    vars: Dict[str, str] = field(default_factory=dict)  # per-user sw.yaml placeholder overrides
 
     @classmethod
     def load(cls) -> "GlobalConfig":
@@ -154,12 +178,15 @@ class GlobalConfig:
                 force_constraint=spec.get("force_constraint", ""),
                 requeue_signal_secs=int(spec.get("requeue_signal_secs", 60)),
                 slurm=spec.get("slurm", {}) or {},
+                container_storage_root=str(spec.get("container_storage_root", "") or ""),
+                vars=_check_vars(spec.get("vars"), f"{GLOBAL_CONFIG_PATH} clusters.{name}.vars"),
             )
         return cls(
             user=raw.get("user", ""),
             forward_env=raw.get("forward_env", list(DEFAULT_FORWARD_ENV)),
             default_cluster=raw.get("default_cluster", "hyak"),
             clusters=merged_clusters,
+            vars=_check_vars(raw.get("vars"), f"{GLOBAL_CONFIG_PATH} vars"),
         )
 
     def cluster(self, name: Optional[str]) -> ClusterConfig:
@@ -171,6 +198,80 @@ class GlobalConfig:
                 f"Run `sw setup` to configure clusters (writes {GLOBAL_CONFIG_PATH})."
             )
         return self.clusters[name]
+
+
+# ---------------------------------------------------------------------------
+# sw.yaml placeholders
+# ---------------------------------------------------------------------------
+# `{name}` tokens in image.sif_remote and env values are expanded at submit time, so
+# one committed sw.yaml works for every user. Names are the built-ins below plus
+# user-defined `vars:`. Precedence, low -> high: sw.yaml `vars:` (project defaults),
+# global config `vars:`, global config `clusters.<name>.vars:`. So each user can point a
+# var somewhere else, e.g. at an image that lives in another user's directory.
+# `{container:name}` gives the same path as seen INSIDE the container (see
+# ClusterConfig.container_path). Braces that don't name a known var are left untouched.
+BUILTIN_PLACEHOLDERS = ("storage_root", "project_dir", "project", "cluster", "user", "netid")
+_PLACEHOLDER_RE = re.compile(r"\{(container:)?([A-Za-z_][A-Za-z0-9_]*)\}")
+_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _check_vars(vars_: Optional[Dict[str, Any]], where: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for k, v in (vars_ or {}).items():
+        k = str(k)
+        if not _VAR_NAME_RE.match(k):
+            raise ConfigError(f"{where}: var name '{k}' must be an identifier")
+        if k in BUILTIN_PLACEHOLDERS:
+            raise ConfigError(f"{where}: var '{k}' shadows a built-in placeholder")
+        out[k] = str(v)
+    return out
+
+
+class PlaceholderResolver:
+    """Expands `{name}` / `{container:name}`; vars may reference other vars and built-ins."""
+
+    def __init__(self, project_name: str, project_vars: Dict[str, str],
+                 cluster: "ClusterConfig", gcfg: "GlobalConfig"):
+        self.cluster = cluster
+        self.values: Dict[str, str] = {
+            "storage_root": cluster.storage_root,
+            "project_dir": cluster.project_dir(project_name),
+            "project": project_name,
+            "cluster": cluster.name,
+            "user": gcfg.user,
+            "netid": gcfg.user,
+        }
+        self.raw_vars: Dict[str, str] = {**project_vars, **gcfg.vars, **cluster.vars}
+        self._resolving: List[str] = []
+
+    def value(self, name: str) -> Optional[str]:
+        if name in self.values:
+            return self.values[name]
+        if name not in self.raw_vars:
+            return None
+        if name in self._resolving:
+            raise ConfigError("sw.yaml vars form a cycle: " + " -> ".join(self._resolving + [name]))
+        self._resolving.append(name)
+        try:
+            self.values[name] = self.expand(self.raw_vars[name])
+        finally:
+            self._resolving.pop()
+        return self.values[name]
+
+    def expand(self, text: str) -> str:
+        def sub(m: "re.Match[str]") -> str:
+            to_container, name = m.group(1), m.group(2)
+            val = self.value(name)
+            if val is None:
+                if to_container:
+                    raise ConfigError(f"unknown placeholder {m.group(0)} in sw.yaml")
+                return m.group(0)  # not ours (e.g. JSON in an env value); leave it
+            if not val:
+                hint = "user" if name in ("user", "netid") else f"vars.{name}"
+                raise ConfigError(f"sw.yaml placeholder {m.group(0)} is empty "
+                                  f"(set `{hint}` in {GLOBAL_CONFIG_PATH})")
+            return self.cluster.container_path(val) if to_container else val
+        return _PLACEHOLDER_RE.sub(sub, text)
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +330,16 @@ class ProjectConfig:
     workdir: str
     prestage: str                        # optional project script run on the compute node pre-container
     defaults: Dict[str, Any]
+    vars: Dict[str, str] = field(default_factory=dict)  # placeholder defaults; users override globally
+
+    def resolved(self, cluster: "ClusterConfig", gcfg: "GlobalConfig") -> "ProjectConfig":
+        """Copy with sw.yaml placeholders expanded for ``cluster`` (see PlaceholderResolver)."""
+        r = PlaceholderResolver(self.name, self.vars, cluster, gcfg)
+        return dataclasses.replace(
+            self,
+            image=dataclasses.replace(self.image, sif_remote=r.expand(self.image.sif_remote)),
+            env={k: r.expand(v) for k, v in self.env.items()},
+        )
 
     @property
     def state_dir(self) -> Path:
@@ -313,6 +424,7 @@ class ProjectConfig:
             workdir=workdir,
             prestage=raw.get("prestage", "") or "",
             defaults=raw.get("defaults", {}) or {},
+            vars=_check_vars(raw.get("vars"), f"{root / PROJECT_CONFIG_NAME} vars"),
         )
 
 
