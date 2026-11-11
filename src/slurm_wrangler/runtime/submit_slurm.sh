@@ -25,6 +25,12 @@ if [[ "$SW_SLURM_LOGS_DIR" != /* ]]; then
 fi
 mkdir -p "$SW_SLURM_LOGS_DIR"
 
+# Partition race: a sibling already started and claimed the group -> don't queue a late copy.
+if [ -n "${SW_RACE_GROUP:-}" ] && [ -s "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner" ]; then
+    echo "[sw-submit] race group '$SW_RACE_GROUP' already claimed by job $(cat "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner"); skipping submit."
+    exit 0
+fi
+
 # --- Bad-node registry -> exclude list -----------------------------------------------
 BAD_NODES_FILE="$SW_SLURM_LOGS_DIR/bad_nodes.tsv"
 BAD_NODE_TTL_DAYS="${SW_BAD_NODE_TTL_DAYS:-7}"

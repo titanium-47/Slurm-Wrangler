@@ -283,6 +283,8 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
         job_id = m.group(1) if m else None
         if not job_id and params.race:
             continue  # group already claimed at submit time; nothing queued
+        if params.race and not job_id:
+            continue  # submit_slurm.sh skipped it (group already claimed)
         first_id = first_id or job_id
         rec = {
             "job_id": job_id, "cluster": cluster.name, "name": job_name, "cmd": cmd_str,
