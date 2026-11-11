@@ -46,6 +46,9 @@ def _add_submit_flags(p):
     p.add_argument("--env", action="append", metavar="K=V", help="extra env var for the job (repeatable)")
     p.add_argument("--exclude-nodes", default="", help="comma list of extra nodes to exclude")
     p.add_argument("--skip-bad-nodes", action="store_true", help="ignore the bad-node registry")
+    p.add_argument("--race", action="store_true",
+                   help="submit one copy per defaults.targets entry in sw.yaml; "
+                        "the first to start cancels the still-pending rest")
     p.add_argument("--allow-large", action="store_true", help="approve all >1GB items this run")
     p.add_argument("--no-build", action="store_true", help="fail instead of auto-building a missing image")
     p.add_argument("--dry-run", action="store_true", help="resolve and print everything, submit nothing")
@@ -174,7 +177,7 @@ def _dispatch(args) -> int:
             cpus_per_gpu=args.cpus_per_gpu, mem_per_gpu=args.mem_per_gpu,
             mem=args.mem, name=args.name, requeue=not args.no_requeue,
             env=_parse_env(args.env), exclude_nodes=args.exclude_nodes,
-            skip_bad_nodes=args.skip_bad_nodes,
+            skip_bad_nodes=args.skip_bad_nodes, race=args.race,
         )
         submit(project, gcfg, params, command, dry_run=args.dry_run,
                allow_large=args.allow_large, no_build=args.no_build)

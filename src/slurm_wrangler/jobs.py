@@ -68,10 +68,16 @@ def logs(project: Optional[ProjectConfig], gcfg: GlobalConfig, job_id: str,
 def cancel(project: Optional[ProjectConfig], gcfg: GlobalConfig, job_id: str,
            cluster_name: Optional[str] = None) -> None:
     cluster = _cluster_for(project, gcfg, cluster_name)
+    if project:  # a raced job: cancel every copy in its group
+        recs = load_job_records(project, 200)
+        grp = next((r.get("group") for r in recs if r.get("job_id") == job_id), None)
+        ids = [r["job_id"] for r in recs if grp and r.get("group") == grp and r.get("job_id")]
+        if len(ids) > 1:
+            job_id = " ".join(ids)
     # Disable requeue first so the classifier honors the operator cancel.
     ssh_run(cluster.login,
-            f"scontrol update JobId={shlex.quote(job_id)} Requeue=0 2>/dev/null; "
-            f"scancel {shlex.quote(job_id)}")
+            "; ".join(f"scontrol update JobId={shlex.quote(j)} Requeue=0 2>/dev/null"
+                      for j in job_id.split()) + f"; scancel {job_id}")
     info(f"cancelled job {job_id} on {cluster.name} (requeue disabled first)")
 
 

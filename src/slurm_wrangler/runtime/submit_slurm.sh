@@ -94,6 +94,19 @@ cat >> "$JOB_SH" <<'JOB_BODY'
 BAD_NODES_FILE="$SW_SLURM_LOGS_DIR/bad_nodes.tsv"
 BAD_NODE_TTL_SECS=$(( ${SW_BAD_NODE_TTL_DAYS:-7} * 86400 ))
 
+# --- Partition race: first copy to start claims the group, cancels pending siblings ---
+if [ -n "${SW_RACE_GROUP:-}" ]; then
+    CLAIM="$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}"
+    if mkdir "$CLAIM" 2>/dev/null; then
+        echo "$SLURM_JOB_ID" > "$CLAIM/owner"
+    elif [ "$(cat "$CLAIM/owner" 2>/dev/null)" != "$SLURM_JOB_ID" ]; then
+        echo "[$(date)] Lost partition race (owner $(cat "$CLAIM/owner" 2>/dev/null)); exiting."
+        exit 0
+    fi
+    echo "[$(date)] Won partition race; cancelling pending siblings of $SLURM_JOB_NAME"
+    scancel --user="$USER" --name="$SLURM_JOB_NAME" --state=PENDING || true
+fi
+
 # --- Requeue handler: time limit (USR1) and preemption (TERM) ---
 requeue_handler() {
     echo "[$(date)] Caught signal: $1 - marking job $SLURM_JOB_ID for requeue"
