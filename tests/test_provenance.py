@@ -194,3 +194,79 @@ class TestWandbSnippet:
         assert sorted(saved) == ["sbatch.sh", "sw_meta.json"]
         assert cfg["sw"]["git"]["commit"] == "abc" and cfg["sw"]["slurm_job_id"] == "42"
         assert run.summary["sw/commit"] == "abc" and run.summary["sw/branch"] == "autopush/x"
+
+
+class TestSubmitMetadata:
+    """Real submit() + real runtime/submit_slurm.sh, run locally (ssh/image/rsync faked)."""
+
+    RUNTIME = Path(__file__).parent.parent / "src/slurm_wrangler/runtime"
+
+    def _setup(self, repo, tmp_path, monkeypatch, sbatch_body):
+        from slurm_wrangler import submit as sub
+        from slurm_wrangler.config import ClusterConfig, GlobalConfig
+        proj, _ = repo
+        (proj.root / "sw.yaml").write_text(yaml.safe_dump({"name": "proj", "defaults": {"targets": [
+            {"partition": "gpu-a40", "account": "lab"}, {"partition": "ckpt", "account": "ckpt-lab"}]}}))
+        proj = ProjectConfig.load(proj.root)
+        (proj.root / "train.py").write_text("print('edited')\n")   # dirty -> autopush
+        store = tmp_path / "store"
+        cluster = ClusterConfig(name="hyak", login="fake", storage_root=str(store), mount_dir="/mmfs1")
+        gcfg = GlobalConfig(user="u", clusters={"hyak": cluster}, default_cluster="hyak", forward_env=[])
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        (bindir / "sbatch").write_text("#!/bin/bash\n" + sbatch_body)
+        (bindir / "sbatch").chmod(0o755)
+        monkeypatch.setattr(sub, "ensure_image", lambda *a, **k: "/x.sif")
+        monkeypatch.setattr(sub, "push_snapshot", lambda *a, **k: "/code")
+        monkeypatch.setattr(sub, "ship_runtime", lambda *a, **k: str(self.RUNTIME))
+        monkeypatch.setattr(sub, "ssh_mkdirs",
+                            lambda login, ds: [Path(d).mkdir(parents=True, exist_ok=True) for d in ds])
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", TMPDIR=str(tmp_path))
+        monkeypatch.setattr(sub, "ssh_run", lambda login, cmd, **k: subprocess.run(
+            ["bash", "-c", cmd], capture_output=True, text=True, env=env, check=True))
+        return sub, proj, gcfg, store
+
+    @staticmethod
+    def _runs(store):
+        return sorted((store / "projects/proj/runs").iterdir())
+
+    def test_race_writes_one_meta_dir_per_target(self, repo, tmp_path, monkeypatch):
+        n = tmp_path / "n"
+        sub, proj, gcfg, store = self._setup(
+            repo, tmp_path, monkeypatch,
+            f'echo $(( $(cat {n} 2>/dev/null || echo 100) + 1 )) > {n}; echo "Submitted batch job $(cat {n})"\n')
+        argv = ["run", "--race", "--", "python", "train.py"]
+        sub.submit(proj, gcfg, sub.SubmitParams(race=True), ["python", "train.py"], argv=argv)
+        runs = self._runs(store)
+        assert [r.name[-3:] for r in runs] == ["-t0", "-t1"]
+        metas = [json.loads((r / "sw_meta.json").read_text()) for r in runs]
+        assert [m["slurm"]["partition"] for m in metas] == ["gpu-a40", "ckpt"]
+        assert [m["slurm"]["account"] for m in metas] == ["lab", "ckpt-lab"]
+        assert metas[0]["git"]["commit"] == metas[1]["git"]["commit"]       # one pinned commit
+        assert metas[0]["git"]["autopush_branch"]
+        assert all(m["sw_env"]["SW_RACE_GROUP"] == m["job_name"] for m in metas)
+        assert all(m["meta_dir"] == str(r) for m, r in zip(metas, runs))
+        assert [(r / "slurm_job_id").read_text().strip() for r in runs] == ["101", "102"]
+        for r, part in zip(runs, ["gpu-a40", "ckpt"]):
+            assert f"#SBATCH --partition={part}" in (r / "sbatch.sh").read_text()
+        recs = [json.loads(line) for line in (proj.state_dir / "jobs.jsonl").read_text().splitlines()]
+        assert [rec["meta_dir"] for rec in recs] == [str(r) for r in runs]
+
+    def test_race_target_skipped_after_claim_writes_nothing(self, repo, tmp_path, monkeypatch):
+        # target 0 "starts" instantly and claims the group -> target 1 must not submit or write meta
+        sub, proj, gcfg, store = self._setup(
+            repo, tmp_path, monkeypatch,
+            'd="$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}"; mkdir -p "$d"; echo 555 > "$d/owner"\n'
+            'echo "Submitted batch job 555"\n')
+        sub.submit(proj, gcfg, sub.SubmitParams(race=True), ["python", "train.py"])
+        runs = self._runs(store)
+        assert [r.name[-3:] for r in runs] == ["-t0"]
+        assert (runs[0] / "slurm_job_id").read_text().strip() == "555"
+        assert len((proj.state_dir / "jobs.jsonl").read_text().splitlines()) == 1
+
+    def test_fixed_name_gets_distinct_dirs(self, repo, tmp_path, monkeypatch):
+        sub, proj, gcfg, store = self._setup(repo, tmp_path, monkeypatch, 'echo "Submitted batch job 7"\n')
+        sub.submit(proj, gcfg, sub.SubmitParams(name="fixed"), ["python", "train.py"])
+        sub.submit(proj, gcfg, sub.SubmitParams(name="fixed"), ["python", "train.py"])
+        runs = self._runs(store)
+        assert len(runs) == 2 and all(r.name.startswith("fixed-") for r in runs)

@@ -327,7 +327,7 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
                 info(f"  --- race target {i + 1}/{len(envs)} ---")
             for k in ("SW_JOB_NAME", "SW_PARTITION", "SW_ACCOUNT", "SW_QOS", "SW_CONSTRAINT",
                       "SW_NODES", "SW_GPUS_PER_NODE", "SW_CPUS_PER_TASK", "SW_MEM_DIRECTIVE",
-                      "SW_TIME", "SW_CODE_DIR", "SW_SIF", "SW_WORKDIR", "SW_LAUNCHER"):
+                      "SW_TIME", "SW_CODE_DIR", "SW_SIF", "SW_WORKDIR", "SW_LAUNCHER", "SW_META_DIR"):
                 info(f"  {k} = {env[k]}")
         info(f"  command = {cmd_str}")
         info(f"  forwarded env: {', '.join(fwd_env) or '(none)'}")
@@ -335,7 +335,6 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
             info(f"  git commit = {git_info['commit']}"
                  + (f"  (autopush {git_info['autopush_branch']})" if git_info.get("autopush_branch") else "")
                  + (f"  [{git_info['note']}]" if git_info.get("note") else ""))
-        info(f"  metadata dir = {envs[0]['SW_META_DIR']}")
         info(f"  binds:\n" + "\n".join(f"    {b.replace('::', ' -> ', 1).replace('::', ' ')}" for b in binds))
         return None
 
