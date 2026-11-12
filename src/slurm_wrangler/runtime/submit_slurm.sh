@@ -230,6 +230,7 @@ if [ -n "${SW_META_DIR:-}" ]; then
         echo "$SW_META_B64" | base64 -d > "$SW_META_DIR/sw_meta.json"
     fi
     cp "$JOB_SH" "$SW_META_DIR/sbatch.sh"
+    chmod 644 "$SW_META_DIR/sbatch.sh"   # mktemp creates 0600
 fi
 
 SUBMIT_OUT=$(env -u SW_META_B64 sbatch --export=ALL "$JOB_SH")
