@@ -213,6 +213,8 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
     cmd_str = " ".join(shlex.quote(c) if re.search(r"\s", c) else c for c in command)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     job_name = params.name or f"sw-{project.name}-{stamp}"
+    if params.race and params.name:
+        job_name = f"{job_name}-{stamp}"  # unique per race: siblings are matched by job name
     fwd_env = collect_forward_env(gcfg, project, params.env)
     binds = build_static_binds(project, cluster)
 
@@ -254,7 +256,7 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
     targets = pdefaults.get("targets") or []
     if params.race and not targets:
         raise ConfigError("--race needs a non-empty `defaults.targets` list in sw.yaml")
-    envs = race_envs(sw_env, targets, f"{job_name}-{stamp}") if params.race else [sw_env]
+    envs = race_envs(sw_env, targets, job_name) if params.race else [sw_env]
 
     def _cmd(env: Dict[str, str]) -> str:
         assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
@@ -294,7 +296,7 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
             "slurm_logs_dir": cluster.slurm_logs_dir(project.name),
         }
         if params.race:
-            rec["group"] = f"{job_name}-{stamp}"
+            rec["group"] = job_name
         _record_job(project, rec)
         if job_id:
             log = f"{cluster.slurm_logs_dir(project.name)}/{job_name}-{job_id}.out"
