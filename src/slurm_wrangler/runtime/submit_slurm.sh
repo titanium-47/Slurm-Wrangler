@@ -25,6 +25,12 @@ if [[ "$SW_SLURM_LOGS_DIR" != /* ]]; then
 fi
 mkdir -p "$SW_SLURM_LOGS_DIR"
 
+# Partition race: a sibling already started and claimed the group -> don't queue a late copy.
+if [ -n "${SW_RACE_GROUP:-}" ] && [ -s "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner" ]; then
+    echo "[sw-submit] race group '$SW_RACE_GROUP' already claimed by job $(cat "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner"); skipping submit."
+    exit 0
+fi
+
 # --- Bad-node registry -> exclude list -----------------------------------------------
 BAD_NODES_FILE="$SW_SLURM_LOGS_DIR/bad_nodes.tsv"
 BAD_NODE_TTL_DAYS="${SW_BAD_NODE_TTL_DAYS:-7}"
@@ -93,6 +99,19 @@ cat >> "$JOB_SH" <<'JOB_BODY'
 
 BAD_NODES_FILE="$SW_SLURM_LOGS_DIR/bad_nodes.tsv"
 BAD_NODE_TTL_SECS=$(( ${SW_BAD_NODE_TTL_DAYS:-7} * 86400 ))
+
+# --- Partition race: first copy to start claims the group, cancels pending siblings ---
+if [ -n "${SW_RACE_GROUP:-}" ]; then
+    CLAIM="$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}"
+    if mkdir "$CLAIM" 2>/dev/null; then
+        echo "$SLURM_JOB_ID" > "$CLAIM/owner"
+    elif [ "$(cat "$CLAIM/owner" 2>/dev/null)" != "$SLURM_JOB_ID" ]; then
+        echo "[$(date)] Lost partition race (owner $(cat "$CLAIM/owner" 2>/dev/null)); exiting."
+        exit 0
+    fi
+    echo "[$(date)] Won partition race; cancelling pending siblings of $SLURM_JOB_NAME"
+    scancel --user="$USER" --name="$SLURM_JOB_NAME" --state=PENDING || true
+fi
 
 # --- Requeue handler: time limit (USR1) and preemption (TERM) ---
 requeue_handler() {
@@ -198,6 +217,11 @@ fi
 
 exit $EXIT_CODE
 JOB_BODY
+
+if [ -n "${SW_RACE_GROUP:-}" ] && [ -s "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner" ]; then
+    echo "[sw-submit] Race group '$SW_RACE_GROUP' already claimed by job $(cat "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP}/owner"); not submitting partition=${SW_PARTITION:-<default>}."
+    exit 0
+fi
 
 SUBMIT_OUT=$(sbatch --export=ALL "$JOB_SH")
 echo "$SUBMIT_OUT"

@@ -347,3 +347,21 @@ class TestPlaceholders:
             proj.resolved(self._hyak(), GlobalConfig(user="u"))
         with pytest.raises(ConfigError, match="shadows"):
             self._proj(tmp_path, vars={"storage_root": "/x"})
+
+
+class TestRace:
+    def test_race_envs(self):
+        from slurm_wrangler.submit import race_envs
+        base = {"SW_JOB_NAME": "j", "SW_PARTITION": "x", "SW_ACCOUNT": "a"}
+        envs = race_envs(base, [{"partition": "p1"}, {"partition": "p2", "account": "b"}], "j")
+        assert [e["SW_PARTITION"] for e in envs] == ["p1", "p2"]
+        assert [e["SW_ACCOUNT"] for e in envs] == ["a", "b"]
+        assert {e["SW_RACE_GROUP"] for e in envs} == {"j"}
+        assert "SW_RACE_GROUP" not in base
+
+    def test_unknown_key(self):
+        import pytest
+        from slurm_wrangler.config import ConfigError
+        from slurm_wrangler.submit import race_envs
+        with pytest.raises(ConfigError):
+            race_envs({}, [{"partion": "p"}], "j")

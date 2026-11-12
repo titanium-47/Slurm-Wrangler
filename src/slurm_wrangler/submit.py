@@ -45,6 +45,26 @@ class SubmitParams:
     env: Dict[str, str] = field(default_factory=dict)
     exclude_nodes: str = ""
     skip_bad_nodes: bool = False
+    race: bool = False
+
+
+RACE_KEYS = {"partition": "SW_PARTITION", "account": "SW_ACCOUNT",
+             "qos": "SW_QOS", "constraint": "SW_CONSTRAINT"}
+
+
+def race_envs(sw_env: Dict[str, str], targets: List[Dict], group: str) -> List[Dict[str, str]]:
+    """One SW_* env per race target (same job name, shared SW_RACE_GROUP)."""
+    out = []
+    for t in targets:
+        bad = set(t) - set(RACE_KEYS)
+        if bad:
+            raise ConfigError(f"defaults.targets entry has unknown keys {sorted(bad)}; "
+                              f"allowed: {sorted(RACE_KEYS)}")
+        env = dict(sw_env, SW_RACE_GROUP=group)
+        for k, v in t.items():
+            env[RACE_KEYS[k]] = str(v or "")
+        out.append(env)
+    return out
 
 
 def _b64(text: str) -> str:
@@ -193,6 +213,8 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
     cmd_str = " ".join(shlex.quote(c) if re.search(r"\s", c) else c for c in command)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     job_name = params.name or f"sw-{project.name}-{stamp}"
+    if params.race and params.name:
+        job_name = f"{job_name}-{stamp}"  # unique per race: siblings are matched by job name
     fwd_env = collect_forward_env(gcfg, project, params.env)
     binds = build_static_binds(project, cluster)
 
@@ -231,39 +253,59 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
         warn("command mentions wandb but WANDB_API_KEY is not in the forwarded env "
              "(export it locally so it reaches the cluster)")
 
-    assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in sw_env.items())
-    remote_cmd = f"{assignments} bash {shlex.quote(runtime_dir + '/submit_slurm.sh')}"
+    targets = pdefaults.get("targets") or []
+    if params.race and not targets:
+        raise ConfigError("--race needs a non-empty `defaults.targets` list in sw.yaml")
+    envs = race_envs(sw_env, targets, job_name) if params.race else [sw_env]
+
+    def _cmd(env: Dict[str, str]) -> str:
+        assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+        return f"{assignments} bash {shlex.quote(runtime_dir + '/submit_slurm.sh')}"
 
     if dry_run:
         info("[dry-run] resolved submission:")
-        for k in ("SW_JOB_NAME", "SW_PARTITION", "SW_ACCOUNT", "SW_QOS", "SW_CONSTRAINT",
-                  "SW_NODES", "SW_GPUS_PER_NODE", "SW_CPUS_PER_TASK", "SW_MEM_DIRECTIVE",
-                  "SW_TIME", "SW_CODE_DIR", "SW_SIF", "SW_WORKDIR", "SW_LAUNCHER"):
-            info(f"  {k} = {sw_env[k]}")
+        for i, env in enumerate(envs):
+            if params.race:
+                info(f"  --- race target {i + 1}/{len(envs)} ---")
+            for k in ("SW_JOB_NAME", "SW_PARTITION", "SW_ACCOUNT", "SW_QOS", "SW_CONSTRAINT",
+                      "SW_NODES", "SW_GPUS_PER_NODE", "SW_CPUS_PER_TASK", "SW_MEM_DIRECTIVE",
+                      "SW_TIME", "SW_CODE_DIR", "SW_SIF", "SW_WORKDIR", "SW_LAUNCHER"):
+                info(f"  {k} = {env[k]}")
         info(f"  command = {cmd_str}")
         info(f"  forwarded env: {', '.join(fwd_env) or '(none)'}")
         info(f"  binds:\n" + "\n".join(f"    {b.replace('::', ' -> ', 1).replace('::', ' ')}" for b in binds))
         return None
 
-    proc = ssh_run(cluster.login, remote_cmd, timeout=900)
-    out = proc.stdout.strip()
-    print(out)
-    m = re.search(r"Submitted batch job (\d+)", out)
-    job_id = m.group(1) if m else None
-    _record_job(project, {
-        "job_id": job_id, "cluster": cluster.name, "name": job_name, "cmd": cmd_str,
-        "code_hash": code_hash, "sif": sif_path, "partition": partition,
-        "gpus": gpus, "nodes": nodes, "time": time_lim,
-        "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "slurm_logs_dir": cluster.slurm_logs_dir(project.name),
-    })
-    if job_id:
-        log = f"{cluster.slurm_logs_dir(project.name)}/{job_name}-{job_id}.out"
-        info(f"submitted job {job_id} on {cluster.name}")
-        info(f"  follow logs:  sw logs {job_id}")
-        info(f"  queue status: sw status")
-        info(f"  log file:     {cluster.login}:{log}")
-    return job_id
+    first_id = None
+    for env in envs:
+        proc = ssh_run(cluster.login, _cmd(env), timeout=900)
+        out = proc.stdout.strip()
+        print(out)
+        m = re.search(r"Submitted batch job (\d+)", out)
+        job_id = m.group(1) if m else None
+        if not job_id and params.race:
+            continue  # group already claimed at submit time; nothing queued
+        if params.race and not job_id:
+            continue  # submit_slurm.sh skipped it (group already claimed)
+        first_id = first_id or job_id
+        rec = {
+            "job_id": job_id, "cluster": cluster.name, "name": job_name, "cmd": cmd_str,
+            "code_hash": code_hash, "sif": sif_path, "partition": env["SW_PARTITION"],
+            "gpus": gpus, "nodes": nodes, "time": time_lim,
+            "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "slurm_logs_dir": cluster.slurm_logs_dir(project.name),
+        }
+        if params.race:
+            rec["group"] = job_name
+        _record_job(project, rec)
+        if job_id:
+            log = f"{cluster.slurm_logs_dir(project.name)}/{job_name}-{job_id}.out"
+            info(f"submitted job {job_id} on {cluster.name}"
+                 + (f" (partition {env['SW_PARTITION'] or '<default>'})" if params.race else ""))
+            info(f"  follow logs:  sw logs {job_id}")
+            info(f"  log file:     {cluster.login}:{log}")
+    info(f"  queue status: sw status")
+    return first_id
 
 
 def _record_job(project: ProjectConfig, record: Dict) -> None:

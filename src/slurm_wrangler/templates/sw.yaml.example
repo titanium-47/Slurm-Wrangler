@@ -62,3 +62,6 @@ defaults:
   # account: ckpt-weirdlab
   # qos: ckpt-gpu
   # constraint: "a40|a100"
+  # targets:                     # `sw run --race`: submit to all, first to start wins
+  #   - {partition: gpu-a40, account: mylab,      qos: gpu}
+  #   - {partition: ckpt,    account: ckpt-mylab, qos: ckpt-gpu}

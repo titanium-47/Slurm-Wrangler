@@ -189,6 +189,13 @@ sw doctor                     # preflight checks
 Everything after `--` is your command, run verbatim inside the container with the synced
 project as the working directory.
 
+## Racing partitions
+
+List candidate targets in `sw.yaml` under `defaults.targets` (any of `partition/account/qos/constraint`),
+then `sw run --race -- <cmd>`. One copy is queued per target; the first to start claims the group and
+`scancel`s its still-pending siblings (cluster-side, no local watcher). Caveats: after the race,
+requeues stay on the winning partition; `sw cancel <id>` cancels the whole group.
+
 ## How it works
 
 ```
