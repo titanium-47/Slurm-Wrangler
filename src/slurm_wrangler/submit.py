@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
+import subprocess
 import time
 from dataclasses import dataclass, field
 from importlib import resources
@@ -20,7 +22,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import ClusterConfig, ConfigError, GlobalConfig, ProjectConfig
+from . import __version__
 from .image import ensure_image
+from .provenance import GitError, git_provenance, redact_env, repro_command, sw_self_commit
 from .remote import RemoteError, info, rsync, ssh_mkdirs, ssh_run, ssh_test, warn
 from .sync import apply_big_gate, compute_code_hash, enumerate_files, push_snapshot
 
@@ -163,7 +167,8 @@ def compute_mem_directive(cluster: ClusterConfig, params: SubmitParams, gpus: in
 
 def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
            command: List[str], *, dry_run: bool = False, allow_large: bool = False,
-           no_build: bool = False) -> Optional[str]:
+           no_build: bool = False, argv: Optional[List[str]] = None,
+           autopush: bool = True) -> Optional[str]:
     if not command:
         raise ConfigError("no command given — usage: sw run [flags] -- <command...>")
     pdefaults = project.defaults or {}
@@ -218,6 +223,23 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
     fwd_env = collect_forward_env(gcfg, project, params.env)
     binds = build_static_binds(project, cluster)
 
+    # --- provenance: pin the synced code to a pushed commit ---
+    git_info: Dict = {}
+    if project.provenance.git != "off":
+        try:
+            git_info = git_provenance(
+                project.root, project.state_dir, [e.relpath for e in entries],
+                job_name=job_name, remote=project.provenance.remote,
+                branch_prefix=project.provenance.branch_prefix,
+                push=autopush, dry_run=dry_run)
+        except (GitError, OSError, subprocess.SubprocessError) as e:
+            warn(f"provenance: could not record git state ({e})")
+    if git_info:
+        # wandb reads these into the run's native git info (no .git in the snapshot)
+        fwd_env["WANDB_GIT_COMMIT"] = git_info["commit"]
+        if git_info.get("remote_url"):
+            fwd_env["WANDB_GIT_REMOTE_URL"] = git_info["remote_url"]
+
     sw_env: Dict[str, str] = {
         "SW_PROJECT": project.name,
         "SW_PROJECT_DIR": pdir,
@@ -258,6 +280,42 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
         raise ConfigError("--race needs a non-empty `defaults.targets` list in sw.yaml")
     envs = race_envs(sw_env, targets, job_name) if params.race else [sw_env]
 
+    # --- per-submission metadata dir (sw_meta.json + sbatch.sh), mounted at /sw_meta ---
+    sw_argv = list(argv) if argv is not None else ["run", "--", *command]
+    common_meta = {
+        "schema": 1,
+        "project": project.name,
+        "cluster": cluster.name,
+        "job_name": job_name,
+        "cmd": cmd_str,
+        "git": git_info,
+        "code_hash": code_hash,
+        "sif": sif_path,
+        "image_kind": project.image.kind,
+        "resources": {"nodes": nodes, "gpus_per_node": gpus, "cpus_per_task": cpus_per_task,
+                      "time": time_lim, "mem": sw_env["SW_MEM_DIRECTIVE"]},
+        "forwarded_env": redact_env(fwd_env),
+        "sw_argv": sw_argv,
+        "sw_cwd": os.path.relpath(Path.cwd(), project.root) if Path.cwd().is_relative_to(project.root) else ".",
+        "sw_version": __version__,
+        "sw_commit": sw_self_commit(),
+        "sw_runtime_hash": runtime_hash(),
+        "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "repro": repro_command(git_info, sw_argv),
+    }
+    # Unique per submission even with a fixed --name: a requeued job re-reads /sw_meta,
+    # so a later submission must never overwrite an earlier one's files.
+    run_id = (job_name if job_name.endswith(stamp) else f"{job_name}-{stamp}") + f"-{secrets.token_hex(2)}"
+    for i, env in enumerate(envs):
+        meta_dir = f"{pdir}/runs/{run_id}" + (f"-t{i}" if params.race else "")
+        meta = dict(common_meta, meta_dir=meta_dir,
+                    slurm={"partition": env["SW_PARTITION"], "account": env["SW_ACCOUNT"],
+                           "qos": env["SW_QOS"], "constraint": env["SW_CONSTRAINT"]},
+                    sw_env={k: v for k, v in env.items()
+                            if k not in ("SW_ENV_FWD_B64", "SW_CMD_B64")})
+        env["SW_META_DIR"] = meta_dir
+        env["SW_META_B64"] = _b64(json.dumps(meta, indent=2, sort_keys=True))
+
     def _cmd(env: Dict[str, str]) -> str:
         assignments = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
         return f"{assignments} bash {shlex.quote(runtime_dir + '/submit_slurm.sh')}"
@@ -273,6 +331,11 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
                 info(f"  {k} = {env[k]}")
         info(f"  command = {cmd_str}")
         info(f"  forwarded env: {', '.join(fwd_env) or '(none)'}")
+        if git_info:
+            info(f"  git commit = {git_info['commit']}"
+                 + (f"  (autopush {git_info['autopush_branch']})" if git_info.get("autopush_branch") else "")
+                 + (f"  [{git_info['note']}]" if git_info.get("note") else ""))
+        info(f"  metadata dir = {envs[0]['SW_META_DIR']}")
         info(f"  binds:\n" + "\n".join(f"    {b.replace('::', ' -> ', 1).replace('::', ' ')}" for b in binds))
         return None
 
@@ -294,6 +357,8 @@ def submit(project: ProjectConfig, gcfg: GlobalConfig, params: SubmitParams,
             "gpus": gpus, "nodes": nodes, "time": time_lim,
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "slurm_logs_dir": cluster.slurm_logs_dir(project.name),
+            "meta_dir": env["SW_META_DIR"],
+            "git": {k: git_info.get(k) for k in ("commit", "autopush_branch", "pushed")} if git_info else {},
         }
         if params.race:
             rec["group"] = job_name

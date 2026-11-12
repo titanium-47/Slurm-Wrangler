@@ -223,5 +223,17 @@ if [ -n "${SW_RACE_GROUP:-}" ] && [ -s "$SW_SLURM_LOGS_DIR/.race_${SW_RACE_GROUP
     exit 0
 fi
 
-SUBMIT_OUT=$(sbatch --export=ALL "$JOB_SH")
+# --- Provenance: keep the exact job script + submission metadata (mounted at /sw_meta) ---
+if [ -n "${SW_META_DIR:-}" ]; then
+    mkdir -p "$SW_META_DIR"
+    if [ -n "${SW_META_B64:-}" ]; then
+        echo "$SW_META_B64" | base64 -d > "$SW_META_DIR/sw_meta.json"
+    fi
+    cp "$JOB_SH" "$SW_META_DIR/sbatch.sh"
+fi
+
+SUBMIT_OUT=$(env -u SW_META_B64 sbatch --export=ALL "$JOB_SH")
 echo "$SUBMIT_OUT"
+if [ -n "${SW_META_DIR:-}" ]; then
+    echo "$SUBMIT_OUT" | grep -oE '[0-9]+$' > "$SW_META_DIR/slurm_job_id" || true
+fi

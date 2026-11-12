@@ -53,6 +53,11 @@ launcher: plain                  # plain | torchrun
                                  # container starts (env: SW_JOB_TMPDIR); replaces
                                  # bespoke staging that cache: entries can't express
 
+# provenance:                    # pin every run to a pushed git commit (see README)
+#   git: auto                    # auto | off
+#   remote: origin               # used when the current branch has no upstream
+#   branch_prefix: autopush/     # uncommitted code is pushed to autopush/<timestamp>
+
 defaults:
   cluster: hyak                  # hyak | tillicum
   gpus: 1

@@ -316,6 +316,13 @@ class CacheConfig:
 
 
 @dataclass
+class ProvenanceConfig:
+    git: str = "auto"                    # auto | off
+    remote: str = "origin"               # used when the current branch has no upstream
+    branch_prefix: str = "autopush/"
+
+
+@dataclass
 class ProjectConfig:
     root: Path
     name: str
@@ -331,6 +338,7 @@ class ProjectConfig:
     prestage: str                        # optional project script run on the compute node pre-container
     defaults: Dict[str, Any]
     vars: Dict[str, str] = field(default_factory=dict)  # placeholder defaults; users override globally
+    provenance: ProvenanceConfig = field(default_factory=ProvenanceConfig)
 
     def resolved(self, cluster: "ClusterConfig", gcfg: "GlobalConfig") -> "ProjectConfig":
         """Copy with sw.yaml placeholders expanded for ``cluster`` (see PlaceholderResolver)."""
@@ -410,6 +418,15 @@ class ProjectConfig:
 
         workdir = raw.get("workdir", "") or f"/workspace/{name}"
 
+        prov_raw = raw.get("provenance", {}) or {}
+        provenance = ProvenanceConfig(
+            git=str(prov_raw.get("git", "auto")),
+            remote=str(prov_raw.get("remote", "origin")),
+            branch_prefix=str(prov_raw.get("branch_prefix", "autopush/")),
+        )
+        if provenance.git not in ("auto", "off"):
+            raise ConfigError(f"provenance.git must be auto|off, got '{provenance.git}'")
+
         return cls(
             root=root,
             name=str(name),
@@ -425,6 +442,7 @@ class ProjectConfig:
             prestage=raw.get("prestage", "") or "",
             defaults=raw.get("defaults", {}) or {},
             vars=_check_vars(raw.get("vars"), f"{root / PROJECT_CONFIG_NAME} vars"),
+            provenance=provenance,
         )
 
 
