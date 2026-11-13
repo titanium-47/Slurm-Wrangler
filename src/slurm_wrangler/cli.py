@@ -22,6 +22,17 @@ def _parse_env(pairs):
     return out
 
 
+def _strip_dry_run(argv):
+    """sw argv for the repro command: drop --dry-run, but only among sw's own flags."""
+    out, passthrough = [], False
+    for a in argv:
+        if a == "--":
+            passthrough = True
+        if passthrough or a != "--dry-run":
+            out.append(a)
+    return out
+
+
 def _project_or_none():
     try:
         return ProjectConfig.load()
@@ -52,6 +63,8 @@ def _add_submit_flags(p):
     p.add_argument("--allow-large", action="store_true", help="approve all >1GB items this run")
     p.add_argument("--no-build", action="store_true", help="fail instead of auto-building a missing image")
     p.add_argument("--dry-run", action="store_true", help="resolve and print everything, submit nothing")
+    p.add_argument("--no-autopush", action="store_true",
+                   help="record the git commit but don't push uncommitted code to autopush/<ts>")
 
 
 def main(argv=None) -> int:
@@ -111,11 +124,16 @@ def main(argv=None) -> int:
     p_cancel.add_argument("job_id")
     p_cancel.add_argument("--cluster")
 
+    p_snip = sub.add_parser("snippet", help="print a paste-in code snippet (e.g. W&B provenance)")
+    p_snip.add_argument("kind", choices=["wandb"])
+
     p_prune = sub.add_parser("prune", help="delete old code snapshots on the cluster")
     p_prune.add_argument("--keep", type=int, default=5)
     p_prune.add_argument("--cluster")
 
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
+    args.raw_argv = raw_argv
     if not args.cmd:
         ap.print_help()
         return 1
@@ -139,6 +157,11 @@ def _dispatch(args) -> int:
     if args.cmd == "init":
         from .wizard import run_init
         run_init(Path(args.path))
+        return 0
+
+    if args.cmd == "snippet":
+        from importlib import resources
+        print((resources.files("slurm_wrangler") / "templates" / "sw_wandb.py").read_text(), end="")
         return 0
 
     gcfg = GlobalConfig.load()
@@ -180,7 +203,8 @@ def _dispatch(args) -> int:
             skip_bad_nodes=args.skip_bad_nodes, race=args.race,
         )
         submit(project, gcfg, params, command, dry_run=args.dry_run,
-               allow_large=args.allow_large, no_build=args.no_build)
+               allow_large=args.allow_large, no_build=args.no_build,
+               argv=_strip_dry_run(args.raw_argv), autopush=not args.no_autopush)
         return 0
 
     if args.cmd == "env":

@@ -30,8 +30,9 @@ def status(project: Optional[ProjectConfig], gcfg: GlobalConfig,
         if recs:
             print(f"\n--- recent submissions from this project ({project.name}) ---")
             for r in recs:
+                commit = ((r.get("git") or {}).get("commit") or "")[:10]
                 print(f"  {r.get('job_id') or '?':>9}  {r.get('cluster', ''):<9} "
-                      f"{r.get('submitted_at', '')}  {r.get('cmd', '')[:80]}")
+                      f"{r.get('submitted_at', '')}  {commit:<10}  {r.get('cmd', '')[:70]}")
 
 
 def logs(project: Optional[ProjectConfig], gcfg: GlobalConfig, job_id: str,

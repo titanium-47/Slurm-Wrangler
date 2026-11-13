@@ -184,10 +184,52 @@ sw data push ~/data/foo       # ship a dataset once
 sw sync --review              # revisit large-directory decisions
 sw prune --keep 5             # delete old code snapshots on the cluster
 sw doctor                     # preflight checks
+sw snippet wandb              # paste-in code that attaches run provenance to W&B
 ```
 
 Everything after `--` is your command, run verbatim inside the container with the synced
 project as the working directory.
+
+## Reproducibility: git commit + sbatch script on W&B
+
+Every `sw run` records exactly what ran:
+
+1. **Code → a pushed commit.** sw builds a commit of exactly the files it syncs: HEAD plus any
+   modified, deleted, or untracked-but-not-ignored files. It does this in a throwaway git index,
+   so your branch, index, and working tree are never touched. If that commit isn't on the remote
+   yet, sw pushes it to `autopush/<YYYYmmdd-HHMMSS>`. That happens when you have uncommitted
+   edits, or a clean HEAD you haven't pushed. A clean, pushed HEAD is recorded as-is. A sweep
+   from one code state pushes only one branch (cached in `.sw/autopush.json`).
+   Use `--no-autopush` to record the commit without pushing, or set `provenance: {git: off}`
+   in `sw.yaml` to turn this off. If the push fails, sw prints a warning and still submits.
+2. **Job → a metadata dir** on the cluster at `<project_dir>/runs/<job_name>/`. It holds:
+   - `sbatch.sh`: the exact generated job script.
+   - `sw_meta.json`: the commit, autopush branch, and remote; your sw argv; the resolved
+     SLURM params; the image; the code hash; the forwarded env (secrets redacted); and the
+     sw version.
+   - `slurm_job_id`.
+
+   Inside the container the dir is mounted read-only at `/sw_meta`, and `SW_META_DIR` points
+   to it.
+3. **W&B.** sw forwards `WANDB_GIT_COMMIT` / `WANDB_GIT_REMOTE_URL`, so wandb's own git info
+   shows the pinned commit with no code changes. To also attach the files and the full
+   metadata, paste the snippet printed by
+
+   ```bash
+   sw snippet wandb
+   ```
+
+   near the top of your training entrypoint. It wraps `wandb.init`, so it works even when a
+   library creates the run. Each run then gets `config.sw.*`; the summary keys `sw/commit`,
+   `sw/branch`, `sw/commit_url`, and `sw/repro`; and `sw_meta.json` + `sbatch.sh` under
+   Files. Outside sw jobs, or without wandb, the snippet does nothing.
+
+To rerun from a W&B page, copy `sw/repro` and run it from the repo root (in the `sw_cwd`
+from `sw_meta.json`, if that isn't `.`):
+
+```bash
+git fetch origin autopush/20260101-120000 && git checkout <commit> && sw run --gpus 4 -- python train.py ...
+```
 
 ## Racing partitions
 

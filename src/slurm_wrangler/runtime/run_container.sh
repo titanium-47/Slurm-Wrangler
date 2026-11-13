@@ -91,6 +91,12 @@ if [ -n "${SW_BINDS_B64:-}" ]; then
     done < <(echo "$SW_BINDS_B64" | base64 -d; echo)
 fi
 
+# Run provenance (sw_meta.json, sbatch.sh) for the in-job wandb snippet
+if [ -n "${SW_META_DIR:-}" ] && [ -d "$SW_META_DIR" ]; then
+    BIND_FLAGS+=(-B "$SW_META_DIR:/sw_meta:ro")
+    ENV_FLAGS+=(--env "SW_META_DIR=/sw_meta")
+fi
+
 # Code over the workdir
 BIND_FLAGS+=(-B "$CODE_LOCAL:$SW_WORKDIR:rw")
 
